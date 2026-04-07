@@ -39,8 +39,5 @@ gym>=0.26.1  # 注意：已通过代码修复兼容版本差异
 gym-super-mario-bros==7.4.0
 nes-py==8.2.1
 
-# Intel RealSense
-pyrealsense2==2.53.1.4623
-
 # Windows specific
 pywin32>=305

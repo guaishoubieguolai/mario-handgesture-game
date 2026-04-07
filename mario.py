@@ -1,7 +1,6 @@
 import tensorflow as tf
 import cv2
 import multiprocessing as _mp
-import pyrealsense2 as rs  # 添加 RealSense SDK
 import numpy as np
 from src.utils import load_graph, mario, detect_hands, predict
 from src.config import ORANGE, RED, GREEN
@@ -13,6 +12,7 @@ tf.compat.v1.flags.DEFINE_integer("height", 480, "Screen height")
 tf.compat.v1.flags.DEFINE_float("threshold", 0.6, "Threshold for score")
 tf.compat.v1.flags.DEFINE_float("alpha", 0.3, "Transparent level")
 tf.compat.v1.flags.DEFINE_string("pre_trained_model_path", "src/pretrained_model.pb", "Path to pre-trained model")
+tf.compat.v1.flags.DEFINE_integer("camera_id", 0, "Camera device ID (default: 0)")
 
 FLAGS = tf.compat.v1.flags.FLAGS
 
@@ -20,11 +20,15 @@ FLAGS = tf.compat.v1.flags.FLAGS
 def main():
     graph, sess = load_graph(FLAGS.pre_trained_model_path)
 
-    # 初始化 RealSense 管道
-    pipeline = rs.pipeline()
-    config = rs.config()
-    config.enable_stream(rs.stream.color, FLAGS.width, FLAGS.height, rs.format.bgr8, 30)
-    pipeline.start(config)
+    # 初始化普通摄像头
+    cap = cv2.VideoCapture(FLAGS.camera_id)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FLAGS.width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FLAGS.height)
+    
+    if not cap.isOpened():
+        print("错误: 无法打开摄像头!")
+        print("提示: 如果有多个摄像头,尝试使用 --camera_id 1 参数")
+        return
 
     mp = _mp.get_context("spawn")
     v = mp.Value('i', 0)
@@ -38,15 +42,11 @@ def main():
             if key == ord("q"):
                 break
 
-            # 从 RealSense 获取帧
-            frames = pipeline.wait_for_frames()
-            color_frame = frames.get_color_frame()
-            if not color_frame:
-                print("Warning: No color frame detected. Skipping...")
+            # 从普通摄像头获取帧
+            ret, frame = cap.read()
+            if not ret:
+                print("警告: 无法从摄像头读取帧!")
                 continue
-
-            # 转换为 NumPy 数组
-            frame = np.asanyarray(color_frame.get_data())
 
             frame = cv2.flip(frame, 1)
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -96,7 +96,7 @@ def main():
             cv2.imshow('Detection', frame)
 
     finally:
-        pipeline.stop()
+        cap.release()
         cv2.destroyAllWindows()
 
 
