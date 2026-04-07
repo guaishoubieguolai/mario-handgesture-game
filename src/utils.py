@@ -1,6 +1,5 @@
 import numpy as np
 from nes_py.wrappers import JoypadSpace
-import gym
 import gym_super_mario_bros
 from gym_super_mario_bros.actions import COMPLEX_MOVEMENT
 import tensorflow as tf
@@ -45,9 +44,17 @@ def predict(boxes, scores, classes, threshold, width, height, num_hands=2):
             count += 1
     return results
 
+def unwrap_to_nes_env(env):
+    """解包环境以获取原始nes-py环境（绕过gym 0.26的API差异）"""
+    while hasattr(env, 'env'):
+        env = env.env
+    return env
+
 def mario(v, lock):
+    # 创建环境并解包以避免API冲突
     env = gym_super_mario_bros.make('SuperMarioBros-1-1-v0')
-    env = JoypadSpace(env, COMPLEX_MOVEMENT)
+    raw_env = unwrap_to_nes_env(env)
+    env = JoypadSpace(raw_env, COMPLEX_MOVEMENT)
     done = True
 
     # 获取屏幕分辨率

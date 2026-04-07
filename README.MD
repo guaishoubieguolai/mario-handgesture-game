@@ -2,7 +2,7 @@
 
 通过手势玩经典游戏，如超级马里奥兄弟！无需键盘或鼠标输入。这是一种有趣且未来感十足的方式，重温旧游戏。
 
-使用 **Python 3.6** 开发，需要Python 3.6及以上版本以及必要的软件包、Intel RealSense 摄像头。
+使用 **Python 3.9+** 开发，需要Python 3.9及以上版本以及必要的软件包、Intel RealSense 摄像头。
 
 ---
 
@@ -17,7 +17,7 @@
 
 ## 硬件要求
 
-- Python 3.6+
+- Python 3.9+
 - Intel RealSense 摄像头 (D400系列或更高型号)
 - Windows 10/11
 - 8GB+ RAM
@@ -75,11 +75,12 @@
 
 | 类别 | 技术 | 版本 | 用途 |
 |-----|------|------|------|
-| 语言 | Python | 3.6+ | 开发语言 |
-| 深度学习 | TensorFlow | 1.15.0 | 手势识别模型推理 |
+| 语言 | Python | 3.9+ | 开发语言 |
+| 深度学习 | TensorFlow | 2.10.0+ | 手势识别模型推理 |
 | 计算机视觉 | OpenCV | 4.5.5.64 | 视频处理与显示 |
 | 深度摄像头 | Intel RealSense SDK | 2.53.1.4623 | 手势捕捉 |
 | 游戏环境 | gym-super-mario-bros | 7.4.0 | 超级马里奥游戏模拟 |
+| 强化学习环境 | gym | 0.26.1+ | 环境接口标准 |
 | GUI | pygame | 2.6.1 | 游戏渲染 |
 
 ### 进程间通信
@@ -104,13 +105,20 @@ process = mp.Process(target=mario, args=(v, lock))
 cd mario-handgesture-game
 ```
 
-### 2. 安装依赖
+### 2. 创建Conda环境（推荐）
+
+```bash
+conda create -n mario-game python=3.9
+conda activate mario-game
+```
+
+### 3. 安装依赖
 
 ```bash
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
-### 3. 运行游戏
+### 4. 运行游戏
 
 ```bash
 python mario.py
@@ -148,9 +156,10 @@ mario-handgesture-game/
 ### 游戏循环
 
 1. 创建 gym 环境: `gym_super_mario_bros.make('SuperMarioBros-1-1-v0')`
-2. 应用 JoypadSpace 包装器
-3. 循环: 接收动作 → 执行步骤 → 渲染帧 → 全屏显示
-4. 每秒约 100 帧 (sleep 0.01)
+2. 使用 `unwrap_to_nes_env()` 解包环境以绕过API差异
+3. 应用 JoypadSpace 包装器
+4. 循环: 接收动作 → 执行步骤 → 渲染帧 → 全屏显示
+5. 每秒约 100 帧 (sleep 0.01)
 
 ---
 
@@ -158,13 +167,50 @@ mario-handgesture-game/
 
 核心依赖：
 - cv2 / opencv-python
-- tensorflow
-- numpy
-- gym
-- gym_super_mario_bros
-- gym_chrome_dino
+- tensorflow >= 2.10.0
+- numpy >= 1.21.6
+- gym >= 0.26.1
+- gym_super_mario_bros == 7.4.0
+- nes-py == 8.2.1
 - pygame
 - pyrealsense2
+
+---
+
+## 版本兼容性说明
+
+### 已知问题及解决方案
+
+#### 1. Gym API 版本差异
+
+**问题**: gym 0.26 与 gym-super-mario-bros 的 API 不兼容
+- gym 0.26 的 `step()` 返回 5 个值: `(obs, reward, terminated, truncated, info)`
+- nes-py 使用旧版 API 返回 4 个值: `(obs, reward, done, info)`
+
+**解决方案**: 在 `src/utils.py` 中添加了 `unwrap_to_nes_env()` 函数：
+```python
+def unwrap_to_nes_env(env):
+    """解包环境以获取原始nes-py环境（绕过gym 0.26的API差异）"""
+    while hasattr(env, 'env'):
+        env = env.env
+    return env
+```
+
+#### 2. TensorFlow 版本升级
+
+**变化**: 从 TensorFlow 1.15.0 升级到 2.10.0+
+- 旧版: TensorFlow 1.15.0
+- 新版: TensorFlow 2.10.0+
+
+**兼容性**: 代码使用 `tf.compat.v1` API，保持向后兼容：
+```python
+tf.compat.v1.flags.DEFINE_integer("width", 640, "Screen width")
+tf.compat.v1.gfile.GFile(path, 'rb')
+```
+
+#### 3. NumPy 版本
+
+当前使用 NumPy 1.21.6，与原计划的 1.19.5 相比，新版本向后兼容，无已知问题。
 
 ---
 
@@ -174,14 +220,47 @@ mario-handgesture-game/
 2. **环境光线**: 手势识别需要在充足的光线环境下进行
 3. **手势距离**: 手部应在摄像头前方约 0.5-1 米范围内
 4. **模型限制**: 当前模型仅识别"张开"和"握拳"两种手势
-5. **非独立程序**: 需要 Python 3.6+ 和相关开发环境
+5. **非独立程序**: 需要 Python 3.9+ 和相关开发环境
+
+---
+
+## 故障排除
+
+### 常见问题
+
+**Q: 运行时提示 `ValueError: not enough values to unpack`**
+A: 这是 gym API 版本差异导致，确保 `src/utils.py` 中包含 `unwrap_to_nes_env()` 函数，且在创建环境时正确调用。
+
+**Q: TensorFlow 加载模型失败**
+A: 检查模型文件 `src/pretrained_model.pb` 是否存在（约18MB），如缺失请重新下载。
+
+**Q: RealSense 摄像头未检测到**
+A: 
+- 检查 USB 连接
+- 确认已安装 RealSense SDK
+- 尝试使用 RealSense Viewer 验证摄像头工作状态
+
+**Q: GPU 未被 TensorFlow 识别**
+A: 项目会自动降级到 CPU 模式运行，不影响功能。如需 GPU 加速，请安装 CUDA 11.2和 cuDNN 8.1。
 
 ---
 
 ## 技术亮点
 
-- TensorFlow 模型推理优化
+- TensorFlow 2.x 向后兼容实现
 - 多进程架构实现并行处理
+- Gym API 版本兼容性修复
 - RealSense 深度摄像头应用
 - OpenCV 可视化与全屏渲染
 - Gym 环境集成经典游戏
+
+---
+
+## 更新日志
+
+### 2026-04-08
+- 更新 TensorFlow 从 1.15.0 到 2.10.0+
+- 更新 gym 从 0.21.0 到 0.26.1
+- 添加 `unwrap_to_nes_env()` 函数修复 API 兼容性
+- 更新 Python 版本要求到 3.9+
+- 添加版本兼容性说明和故障排除指南
