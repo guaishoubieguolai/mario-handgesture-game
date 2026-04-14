@@ -1,39 +1,264 @@
-import tensorflow as tf
-import cv2
-import multiprocessing as _mp
-import numpy as np
-from src.utils import load_graph, mario, detect_hands, predict
-from src.config import ORANGE, RED, GREEN
-import win32gui  # 用于设置窗口最顶层
-import win32con  # 用于设置窗口属性
+import sys
+import os
+import warnings
 
-tf.compat.v1.flags.DEFINE_integer("width", 640, "Screen width")
-tf.compat.v1.flags.DEFINE_integer("height", 480, "Screen height")
-tf.compat.v1.flags.DEFINE_float("threshold", 0.6, "Threshold for score")
-tf.compat.v1.flags.DEFINE_float("alpha", 0.3, "Transparent level")
-tf.compat.v1.flags.DEFINE_string("pre_trained_model_path", "src/pretrained_model.pb", "Path to pre-trained model")
-tf.compat.v1.flags.DEFINE_integer("camera_id", 0, "Camera device ID (default: 0)")
+# ========== 抑制警告信息 ==========
+# 抑制TensorFlow警告
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 只显示ERROR
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # 关闭oneDNN优化警告
 
-FLAGS = tf.compat.v1.flags.FLAGS
+# 抑制gym和其他库的警告
+warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+warnings.filterwarnings('ignore', category=FutureWarning)
+
+# ========== 关键：检测multiprocessing子进程 ==========
+_is_child_process = any('--multiprocessing-fork' in arg or '--multiprocessing' in arg for arg in sys.argv)
+
+if _is_child_process:
+    # 子进程：只导入必需模块
+    import multiprocessing
+    multiprocessing.freeze_support()
+    # 导入游戏模块（不含TensorFlow）
+    from src.mario_game import run_mario_game
+    import cv2
+    import numpy as np
+    # 子进程到此结束，等待被调用
+else:
+    # 主进程：导入所有模块（包括TensorFlow）
+    import tensorflow as tf
+    import cv2
+    import multiprocessing as _mp
+    import numpy as np
+    from src.utils import load_graph, detect_hands, predict
+    from src.config import ORANGE, RED, GREEN
+    from src.mario_game import run_mario_game  # 使用独立的游戏模块
+    import win32gui
+    import win32con
+
+
+
+# 获取打包后的资源路径
+def get_resource_path(relative_path):
+    """获取资源文件的绝对路径（兼容打包和开发环境）"""
+    try:
+        # PyInstaller打包后的临时目录
+        base_path = sys._MEIPASS
+    except Exception:
+        # 开发环境
+        base_path = os.path.abspath(".")
+    
+    return os.path.join(base_path, relative_path)
+
+# 主进程才定义TensorFlow flags和主函数
+if not _is_child_process:
+    tf.compat.v1.flags.DEFINE_integer("width", 0, "Screen width (0 for auto-detect max resolution)")
+    tf.compat.v1.flags.DEFINE_integer("height", 0, "Screen height (0 for auto-detect max resolution)")
+    tf.compat.v1.flags.DEFINE_float("threshold", 0.6, "Threshold for score")
+    tf.compat.v1.flags.DEFINE_float("alpha", 0.3, "Transparent level")
+    tf.compat.v1.flags.DEFINE_string("pre_trained_model_path", "src/pretrained_model.pb", "Path to pre-trained model")
+    tf.compat.v1.flags.DEFINE_integer("camera_id", 0, "Camera device ID (default: 0)")
+
+    FLAGS = tf.compat.v1.flags.FLAGS
+
+
+def try_open_camera(max_attempts=3):
+    """自动尝试打开摄像头（依次尝试 0, 1, 2...）
+    
+    策略：
+    1. 先使用常规方法（默认后端）- 兼容大多数电脑
+    2. 失败后使用CAP_DSHOW后端 - 兼容联想Y7000等特殊设备
+    
+    Args:
+        max_attempts: 最大尝试数量（默认3个）
+    
+    Returns:
+        (cap, camera_id) 或 (None, -1)
+    """
+    print("正在搜索可用摄像头...")
+    
+    for camera_id in range(max_attempts):
+        print(f"尝试摄像头 {camera_id}...", end=" ")
+        
+        # 策略1：先尝试常规方法（默认后端，适用于大多数电脑）
+        cap = cv2.VideoCapture(camera_id)
+        
+        if cap.isOpened():
+            ret, frame = cap.read()
+            
+            if ret and frame is not None:
+                brightness = frame.mean()
+                
+                if brightness > 10:
+                    print(f"[OK] 成功！亮度={brightness:.1f} (默认后端)")
+                    return cap, camera_id
+                else:
+                    print(f"[INFO] 默认后端画面全黑，尝试CAP_DSHOW...")
+                    cap.release()
+                    
+                    # 策略2：尝试CAP_DSHOW后端（兼容Y7000等设备）
+                    cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
+                    
+                    if cap.isOpened():
+                        ret, frame = cap.read()
+                        if ret and frame is not None and frame.mean() > 10:
+                            brightness = frame.mean()
+                            print(f"[OK] 成功！亮度={brightness:.1f} (CAP_DSHOW后端)")
+                            return cap, camera_id
+                        else:
+                            print(f"[FAIL] CAP_DSHOW也不可用")
+                            cap.release()
+            else:
+                print("[FAIL] 无法读取帧")
+                cap.release()
+        else:
+            print("[FAIL] 无法打开")
+    
+    return None, -1
+
+
+def get_camera_max_resolution(cap, camera_id):
+    """安全地获取摄像头支持的最大分辨率"""
+    # 获取默认分辨率
+    default_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    default_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    print(f"摄像头默认分辨率: {default_width}x{default_height}")
+    
+    # 尝试常见的高分辨率（从高到低）
+    test_resolutions = [
+        (2560, 1440),  # 2K QHD
+        (1920, 1080),  # Full HD
+        (1280, 720),   # HD
+        (800, 600),    # SVGA
+        (640, 480),    # VGA
+    ]
+    
+    max_resolution = (default_width, default_height)
+    
+    for w, h in test_resolutions:
+        # 尝试设置分辨率
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+        
+        # 等待一下让摄像头适应
+        import time
+        time.sleep(0.1)
+        
+        # 获取实际设置的分辨率
+        actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        # 尝试读取一帧验证
+        ret, frame = cap.read()
+        
+        if ret and frame is not None:
+            if actual_w * actual_h > max_resolution[0] * max_resolution[1]:
+                max_resolution = (actual_w, actual_h)
+                print(f"检测到支持分辨率: {actual_w}x{actual_h}")
+            
+            # 如果达到了目标分辨率，可以提前返回
+            if actual_w == w and actual_h == h:
+                break
+    
+    # 恢复到最大分辨率
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, max_resolution[0])
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, max_resolution[1])
+    
+    # 验证最终分辨率
+    final_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    final_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    return final_w, final_h
 
 
 def main():
-    graph, sess = load_graph(FLAGS.pre_trained_model_path)
-
-    # 初始化普通摄像头
-    cap = cv2.VideoCapture(FLAGS.camera_id)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FLAGS.width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FLAGS.height)
+    # 获取模型文件的正确路径（兼容打包和开发环境）
+    model_path = get_resource_path(FLAGS.pre_trained_model_path)
     
-    if not cap.isOpened():
-        print("错误: 无法打开摄像头!")
-        print("提示: 如果有多个摄像头,尝试使用 --camera_id 1 参数")
-        return
+    print(f"加载模型: {model_path}")
+    graph, sess = load_graph(model_path)
+
+    # 初始化摄像头（支持自动尝试多个摄像头）
+    cap = None
+    camera_id = FLAGS.camera_id
+    
+    # 如果用户指定了摄像头ID，只尝试那个
+    if camera_id != 0 or (FLAGS.width != 0 and FLAGS.height != 0):
+        print(f"使用指定摄像头: {camera_id}")
+        
+        # 先尝试默认后端
+        cap = cv2.VideoCapture(camera_id)
+        
+        if cap.isOpened():
+            ret, frame = cap.read()
+            if ret and frame is not None and frame.mean() > 10:
+                print(f"[OK] 默认后端可用")
+            else:
+                # 默认后端失败，尝试CAP_DSHOW
+                print("[INFO] 默认后端不可用，尝试CAP_DSHOW...")
+                cap.release()
+                cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
+                
+                if cap.isOpened():
+                    ret, frame = cap.read()
+                    if ret and frame is not None and frame.mean() > 10:
+                        print(f"[OK] CAP_DSHOW后端可用")
+                    else:
+                        print("错误: 摄像头无法正常工作!")
+                        cap.release()
+                        return
+                else:
+                    print(f"错误: 无法打开摄像头 {camera_id}!")
+                    return
+        else:
+            # 默认后端打开失败，尝试CAP_DSHOW
+            print("[INFO] 默认后端无法打开，尝试CAP_DSHOW...")
+            cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
+            
+            if not cap.isOpened():
+                print(f"错误: 无法打开摄像头 {camera_id}!")
+                return
+            
+            ret, frame = cap.read()
+            if not ret or frame is None or frame.mean() < 10:
+                print("错误: 摄像头无法正常工作!")
+                cap.release()
+                return
+    else:
+        # 自动尝试多个摄像头
+        cap, camera_id = try_open_camera(max_attempts=3)
+        
+        if cap is None:
+            print("\n错误: 未找到可用摄像头!")
+            print("请检查：")
+            print("  1. 摄像头是否连接")
+            print("  2. 是否被其他应用占用")
+            print("  3. 尝试手动指定 --camera_id 参数")
+            return
+    
+    print(f"\n使用摄像头 {camera_id}")
+    
+    # 自动检测最大分辨率
+    if FLAGS.width == 0 or FLAGS.height == 0:
+        print("正在检测摄像头最大分辨率...")
+        FLAGS.width, FLAGS.height = get_camera_max_resolution(cap, camera_id)
+        print(f"使用摄像头最大分辨率: {FLAGS.width}x{FLAGS.height}")
+    else:
+        # 用户手动指定分辨率
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, FLAGS.width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FLAGS.height)
+        actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        print(f"摄像头分辨率: {actual_w}x{actual_h}")
+        FLAGS.width = actual_w
+        FLAGS.height = actual_h
 
     mp = _mp.get_context("spawn")
     v = mp.Value('i', 0)
     lock = mp.Lock()
-    process = mp.Process(target=mario, args=(v, lock))
+    # 使用独立模块的函数，避免子进程重新导入此文件
+    process = mp.Process(target=run_mario_game, args=(v, lock))
     process.start()
 
     try:
@@ -101,4 +326,8 @@ def main():
 
 
 if __name__ == '__main__':
+    # Windows多进程必须调用freeze_support
+    _mp.freeze_support()
+    
+    # 只有在主模块才运行main
     main()
