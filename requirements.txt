@@ -1,43 +1,15 @@
-# Core dependencies
-absl-py>=1.4.0
-certifi>=2021.5.30
-charset-normalizer>=2.0.12
-cloudpickle>=2.2.1
-colorama>=0.4.5
-grpcio>=1.48.2
-h5py>=3.1.0
-idna>=3.10
-importlib-metadata>=4.8.3
-Keras-Preprocessing>=1.1.2
-Markdown>=3.3.7
-numpy>=1.21.6
+# TensorFlow (GPU version recommended for real-time performance)
+tensorflow==2.19.0
+
+# Computer Vision
+numpy<2.0  # Must be <2.0 for OpenCV compatibility
 opencv-python==4.5.5.64
-packaging>=26.0
-Pillow>=8.4.0
-protobuf>=3.19.6
-pygame==2.6.1
-pyglet==1.5.21
-requests>=2.27.1
-setuptools>=58.0.4
-six>=1.17.0
-termcolor>=1.1.0
-tqdm>=4.64.1
-typing_extensions>=4.1.1
-urllib3>=1.26.20
-Werkzeug>=2.0.3
-wheel>=0.37.1
-wrapt>=1.16.0
-zipp>=3.6.0
 
-# TensorFlow (使用 2.x 版本，通过 compat.v1 API 兼容)
-tensorflow>=2.10.0
-tensorflow-estimator>=2.10.0
-tensorboard>=2.10.0
-
-# Gym and Game Environment
-gym>=0.26.1  # 注意：已通过代码修复兼容版本差异
+# Game Environment
+gym==0.26.1
 gym-super-mario-bros==7.4.0
 nes-py==8.2.1
+pygame==2.6.1
 
 # Windows specific
 pywin32>=305
